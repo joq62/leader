@@ -21,8 +21,7 @@
 -export([
 	 start_election/1,
 	 declare_victory/2,
-	 i_am_alive/2,
-	 timeout_election/0
+	 i_am_alive/2
 	]).
 
 
@@ -42,8 +41,6 @@
 	 terminate/2, code_change/3, format_status/2]).
 
 -define(SERVER, ?MODULE).
-
-
 
 -record(state, {leader,
 		app,
@@ -111,8 +108,7 @@ declare_victory(LeaderPid,Node)->
     LeaderPid!{declare_victory,Node}.
 i_am_alive(LeaderPid,Node)->
     LeaderPid!{i_am_alive,Node}.
-timeout_election()->
-    gen_server:cast(?SERVER,{timeout_election}).
+
 
 %%--------------------------------------------------------------------
 %% @doc
