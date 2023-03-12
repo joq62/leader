@@ -175,7 +175,7 @@ handle_cast(Request, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({nodedown,Node}, State) ->
-    io:format(" ~p~n",[{nodedown,Node,node(),?MODULE,?LINE}]),
+ %   io:format(" ~p~n",[{nodedown,Node,node(),?MODULE,?LINE}]),
     case Node==State#state.leader of
 	true->
 	    send_start_election(State#state.app),

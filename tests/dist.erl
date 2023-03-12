@@ -91,7 +91,7 @@ i_am_alive(MyNode)->
 %%--------------------------------------------------------------------
 init([]) ->
     {ok,LeaderPid}=leader:start(dist),
-    io:format("LeaderPid ~p~n",[{LeaderPid,?MODULE,?LINE}]),
+ %   io:format("LeaderPid ~p~n",[{LeaderPid,?MODULE,?LINE}]),
        
     {ok, #state{leader_pid=LeaderPid}}.
 
@@ -110,12 +110,12 @@ handle_call({who_is_leader}, _From, State) ->
     {reply, Reply, State};
 
 handle_call({ping}, _From, State) ->
-    io:format("ping ~p~n",[{?MODULE,?LINE}]),
+ %   io:format("ping ~p~n",[{?MODULE,?LINE}]),
     Reply = pong,
     {reply, Reply, State};
 
 handle_call({ping_leader}, _From, State) ->
-    io:format("ping_leader ~p~n",[{?MODULE,?LINE}]),
+%    io:format("ping_leader ~p~n",[{?MODULE,?LINE}]),
     Reply = leader:ping(State#state.leader_pid,5000),
     {reply, Reply, State};
 

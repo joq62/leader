@@ -80,7 +80,7 @@ test_1()->
     false=rpc:call(N1,dist,am_i_leader,[N1],5000),
     false=rpc:call(N1,dist,am_i_leader,[N2],5000),
     true=rpc:call(N1,dist,am_i_leader,[N3],5000),
-    io:format("N4 dist OK! ~p~n",[{?MODULE,?LINE}]),
+    io:format("N3 dist OK! ~p~n",[{?MODULE,?LINE}]),
   
  %% N4
     ok=rpc:call(N4,application,load,[dist],5000),
