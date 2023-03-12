@@ -6,22 +6,22 @@
 %%% @end
 %%% Created :  5 Mar 2023 by c50 <joq62@c50>
 %%%-------------------------------------------------------------------
--module(leader).
+-module(leader_server).
 
 -behaviour(gen_server).
 %% Server API
--export([who_is_leader/2,
-	 am_i_leader/3,
-	 ping/2]).
+-export([who_is_leader/0,
+	 am_i_leader/1,
+	 ping/0]).
 
 
 
 %% fms signals
 -define(COORDINATOR_SERVER, ?MODULE).
 -export([
-	 start_election/1,
-	 declare_victory/2,
-	 i_am_alive/2,
+	 start_election/0,
+	 declare_victory/1,
+	 i_am_alive/1,
 	 timeout_election/0
 	]).
 
@@ -46,7 +46,6 @@
 
 
 -record(state, {leader,
-		app,
 		fsm_state,
 		nodes,
 		timeout_pid}).
@@ -59,58 +58,19 @@
 %% @spec
 %% @end
 %%--------------------------------------------------------------------
-who_is_leader(LeaderPid,Timeout)->
-    LeaderPid!{self(),who_is_leader},
-    Result=receive
-	       {LeaderPid,Leader}->
-		   Leader
-	   after Timeout ->
-		   {error,[timeout]}
-	   end,
-    Result.
-%%--------------------------------------------------------------------
-%% @doc
-%% @spec
-%% @end
-%%--------------------------------------------------------------------
-ping(LeaderPid,Timeout)->
-    LeaderPid!{self(),ping},
-    Result=receive
-	       {LeaderPid,pong}->
-		   pong
-	   after Timeout ->
-		   {error,[timeout]}
-	   end,
-    Result.
-%%--------------------------------------------------------------------
-%% @doc
-%% @spec
-%% @end
-%%--------------------------------------------------------------------
-am_i_leader(LeaderPid,MyNode,Timeout)->
-    Result=case leader:who_is_leader(LeaderPid,Timeout) of
-	       {error,Reason}->
-		   {error,Reason};
-	       LeaderNode->
-		   case LeaderNode==MyNode of
-		       true->
-			   true;
-		       false->
-			   false
-		   end
-	   end,
-    Result.
-%%--------------------------------------------------------------------
-%% @doc
-%% @spec
-%% @end
-%%--------------------------------------------------------------------
-start_election(LeaderPid)->
-    LeaderPid!{start_election}.
-declare_victory(LeaderPid,Node)->
-    LeaderPid!{declare_victory,Node}.
-i_am_alive(LeaderPid,Node)->
-    LeaderPid!{i_am_alive,Node}.
+who_is_leader()->
+    gen_server:call(?SERVER, {who_is_leader},infinity).
+am_i_leader(Node)->
+    gen_server:call(?SERVER, {am_i_leader,Node},infinity).
+ping()->
+    gen_server:call(?SERVER, {ping},infinity).
+
+start_election()->
+    gen_server:cast(?SERVER,{start_election}).
+declare_victory(Node)->
+    gen_server:cast(?SERVER,{declare_victory,Node}).
+i_am_alive(Node)->
+    gen_server:cast(?SERVER,{i_am_alive,Node}).
 timeout_election()->
     gen_server:cast(?SERVER,{timeout_election}).
 
@@ -119,10 +79,15 @@ timeout_election()->
 %% Starts the server
 %% @end
 %%--------------------------------------------------------------------
-start(App)->
-    start_link(App).
-start_link(App) ->
-    gen_server:start_link(?MODULE, App, []).
+start(Nodes)->
+    start_link(Nodes).
+
+-spec start_link(Nodes::[]) -> {ok, Pid :: pid()} |
+	  {error, Error :: {already_started, pid()}} |
+	  {error, Error :: term()} |
+	  ignore.
+start_link(Nodes) ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, Nodes, []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -134,18 +99,22 @@ start_link(App) ->
 %% Initializes the server
 %% @end
 %%--------------------------------------------------------------------
-init(App) ->
+-spec init(Args :: term()) -> {ok, State :: term()} |
+	  {ok, State :: term(), Timeout :: timeout()} |
+	  {ok, State :: term(), hibernate} |
+	  {stop, Reason :: term()} |
+	  ignore.
+init(Nodes) ->
     ServerPid=self(),
     Pid=spawn(fun()->timeout_loop(ServerPid,infinity) end),
-    send_start_election(App),
+    send_start_election(Nodes),
     set_election_timer(Pid,?ELECTION_RESPONSE_TIMEOUT),
     
     {ok, #state{
 	    leader=undefined,
-	    app=App,
 	    fsm_state=election,
-	    timeout_pid=Pid
-	   }}.
+	    timeout_pid=Pid,
+	    nodes=Nodes}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -153,6 +122,24 @@ init(App) ->
 %% Handling call messages
 %% @end
 %%--------------------------------------------------------------------
+handle_call({who_is_leader}, _From, State) ->
+    Reply = State#state.leader,
+    {reply, Reply, State};
+
+handle_call({am_i_leader,Node}, _From, State) ->
+    Reply = if 
+		Node/=State#state.leader ->
+		    false;
+		true->
+		    true
+	    end,
+		
+    {reply, Reply, State};
+
+handle_call({ping}, _From, State) ->
+    Reply = pong,
+    {reply, Reply, State};
+
 handle_call(Request, _From, State) ->
     io:format("Unmatched signal ~p~n",[{Request,?MODULE,?LINE}]),
     Reply = {error,[unmatched_signal,Request]},
@@ -164,6 +151,102 @@ handle_call(Request, _From, State) ->
 %% Handling cast messages
 %% @end
 %%--------------------------------------------------------------------
+
+%% state election -----------------------------------------------------
+handle_cast({start_election}, #state{fsm_state=election}=State) ->
+%    io:format(" ~p~n",[{start_election,election,node(),?MODULE,?LINE}]),
+    send_start_election(State#state.nodes),
+    set_election_timer(State#state.timeout_pid,?ELECTION_RESPONSE_TIMEOUT),
+    NewState=State,
+    {noreply, NewState};
+
+handle_cast({declare_victory,LeaderNode}, #state{fsm_state=election}=State) ->
+ %   io:format(" ~p~n",[{declare_victory,LeaderNode,election,node(),?MODULE,?LINE}]),
+    case LeaderNode==node() of
+	true->
+	    NewState=State#state{leader=node()};
+	false->
+	    monitor_node(State#state.leader, false),
+	    monitor_node(LeaderNode, true),
+	    NewState=State#state{leader=LeaderNode,
+				 fsm_state=candidate}
+    end,
+    {noreply, NewState};
+
+handle_cast({i_am_alive,HigherNode}, #state{fsm_state=election}=State) ->
+ %   io:format(" ~p~n",[{i_am_alive,HigherNode,election,node(),?MODULE,?LINE}]),
+    set_election_timer(State#state.timeout_pid,infinity),
+    NewState=State,
+    {noreply, NewState};
+
+handle_cast({timeout_election}, #state{fsm_state=election}=State) ->
+ %   io:format(" ~p~n",[{timeout_election,election,node(),?MODULE,?LINE}]),
+    send_declare_victory(State#state.nodes),
+    set_election_timer(State#state.timeout_pid,infinity),
+    NewState=State#state{fsm_state=leader,
+			 leader=node()},
+    {noreply, NewState};
+
+%% state candidate -----------------------------------------------------
+handle_cast({start_election}, #state{fsm_state=candidate}=State) ->
+ %   io:format(" ~p~n",[{start_election,candidate,node(),?MODULE,?LINE}]),
+    send_i_am_alive(State#state.nodes),
+    send_start_election(State#state.nodes),
+    set_election_timer(State#state.timeout_pid,?ELECTION_RESPONSE_TIMEOUT),
+    NewState=NewState=State#state{fsm_state=election},
+    {noreply, NewState};
+
+handle_cast({i_am_alive,_HigherNode}, #state{fsm_state=candidate}=State) ->
+%   io:format(" ~p~n",[{i_am_alive,_HigherNode,candidate,node(),?MODULE,?LINE}]),
+    NewState=State,
+    {noreply, NewState};
+
+handle_cast({declare_victory,LeaderNode}, #state{fsm_state=candidate}=State) ->
+%   io:format(" ~p~n",[{declare_victory,LeaderNode,candidate,node(),?MODULE,?LINE}]),
+    monitor_node(State#state.leader, false),
+    monitor_node(LeaderNode, true),
+    NewState=State#state{leader=LeaderNode},
+    {noreply, NewState};
+
+handle_cast({timeout_election}, #state{fsm_state=candidate}=State) ->
+%    io:format(" ~p~n",[{timeout_election,candidate,node(),?MODULE,?LINE}]),
+    set_election_timer(State#state.timeout_pid,infinity),
+    NewState=State,
+    {noreply, NewState};
+
+%% state leader -----------------------------------------------------
+handle_cast({start_election}, #state{fsm_state=leader}=State) ->
+%    io:format(" ~p~n",[{start_election,leader,node(),?MODULE,?LINE}]),
+    send_i_am_alive(State#state.nodes),
+    send_start_election(State#state.nodes),
+    set_election_timer(State#state.timeout_pid,?ELECTION_RESPONSE_TIMEOUT),
+    NewState=NewState=State#state{fsm_state=election},
+    {noreply, NewState};
+
+handle_cast({i_am_alive,_HigherNode}, #state{fsm_state=leader}=State) ->
+ %   io:format(" ~p~n",[{i_am_alive,_HigherNode,leader,node(),?MODULE,?LINE}]),
+    NewState=State,
+    {noreply, NewState};
+
+handle_cast({declare_victory,LeaderNode}, #state{fsm_state=leader}=State) ->
+ %  io:format(" ~p~n",[{declare_victory,LeaderNode,leader,node(),?MODULE,?LINE}]),
+    case LeaderNode==node() of
+	true->
+	    NewState=State#state{leader=node()};
+	false->
+	    monitor_node(State#state.leader, false),
+	    monitor_node(LeaderNode, true),
+	    NewState=State#state{leader=LeaderNode,
+				 fsm_state=candidate}
+    end,
+    {noreply, NewState};
+
+handle_cast({timeout_election}, #state{fsm_state=leader}=State) ->
+ %   io:format(" ~p~n",[{timeout_election,leader,node(),?MODULE,?LINE}]),
+    set_election_timer(State#state.timeout_pid,infinity),
+    NewState=State,
+    {noreply, NewState};
+
 handle_cast(Request, State) ->
     io:format("Unmatched signal ~p~n",[{Request,?MODULE,?LINE}]),
     {noreply, State}.
@@ -175,127 +258,15 @@ handle_cast(Request, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({nodedown,Node}, State) ->
-    io:format(" ~p~n",[{nodedown,Node,node(),?MODULE,?LINE}]),
     case Node==State#state.leader of
 	true->
-	    send_start_election(State#state.app),
+	    send_start_election(State#state.nodes),
 	    set_election_timer(State#state.timeout_pid,?ELECTION_RESPONSE_TIMEOUT),
 	    NewState=State#state{fsm_state=election};
 	false->
 	    NewState=State
     end,
     {noreply, NewState};
-%%--------------------------------------------------------------------
-%% @doc
-%% @spec
-%% @end
-%%--------------------------------------------------------------------
-handle_info({CallerPid,who_is_leader}, State) ->
- %   io:format(" ~p~n",[{CallerPid,ping,node(),?MODULE,?LINE}]),
-    CallerPid!{self(),State#state.leader},
-    {noreply,State};
-
-handle_info({CallerPid,ping}, State) ->
- %   io:format(" ~p~n",[{CallerPid,ping,node(),?MODULE,?LINE}]),
-    CallerPid!{self(),pong},
-    {noreply,State};
-
-
-%% state election -----------------------------------------------------
-handle_info({start_election}, #state{fsm_state=election}=State) ->
-    io:format(" ~p~n",[{start_election,election,node(),?MODULE,?LINE}]),
-    send_start_election(State#state.app),
-    set_election_timer(State#state.timeout_pid,?ELECTION_RESPONSE_TIMEOUT),
-    NewState=State,
-    {noreply, NewState};
-
-handle_info({declare_victory,LeaderNode}, #state{fsm_state=election}=State) ->
-    io:format(" ~p~n",[{declare_victory,LeaderNode,election,node(),?MODULE,?LINE}]),
-    case LeaderNode==node() of
-	true->
-	    NewState=State#state{leader=node()};
-	false->
-	    monitor_node(State#state.leader, false),
-	    monitor_node(LeaderNode, true),
-	    NewState=State#state{leader=LeaderNode,
-				 fsm_state=candidate}
-    end,
-    {noreply, NewState};
-
-handle_info({i_am_alive,HigherNode}, #state{fsm_state=election}=State) ->
-    io:format(" ~p~n",[{i_am_alive,HigherNode,election,node(),?MODULE,?LINE}]),
-    set_election_timer(State#state.timeout_pid,infinity),
-    NewState=State,
-    {noreply, NewState};
-
-handle_info({timeout_election}, #state{fsm_state=election}=State) ->
-    io:format(" ~p~n",[{timeout_election,election,node(),?MODULE,?LINE}]),
-    send_declare_victory(State#state.app),
-    set_election_timer(State#state.timeout_pid,infinity),
-    NewState=State#state{fsm_state=leader,
-			 leader=node()},
-    {noreply, NewState};
-
-%% state candidate -----------------------------------------------------
-handle_info({start_election}, #state{fsm_state=candidate}=State) ->
-    io:format(" ~p~n",[{start_election,candidate,node(),?MODULE,?LINE}]),
-    send_i_am_alive(State#state.app),
-    send_start_election(State#state.app),
-    set_election_timer(State#state.timeout_pid,?ELECTION_RESPONSE_TIMEOUT),
-    NewState=NewState=State#state{fsm_state=election},
-    {noreply, NewState};
-
-handle_info({i_am_alive,_HigherNode}, #state{fsm_state=candidate}=State) ->
-%   io:format(" ~p~n",[{i_am_alive,_HigherNode,candidate,node(),?MODULE,?LINE}]),
-    NewState=State,
-    {noreply, NewState};
-
-handle_info({declare_victory,LeaderNode}, #state{fsm_state=candidate}=State) ->
-   io:format(" ~p~n",[{declare_victory,LeaderNode,candidate,node(),?MODULE,?LINE}]),
-    monitor_node(State#state.leader, false),
-    monitor_node(LeaderNode, true),
-    NewState=State#state{leader=LeaderNode},
-    {noreply, NewState};
-
-handle_info({timeout_election}, #state{fsm_state=candidate}=State) ->
-    io:format(" ~p~n",[{timeout_election,candidate,node(),?MODULE,?LINE}]),
-    set_election_timer(State#state.timeout_pid,infinity),
-    NewState=State,
-    {noreply, NewState};
-
-%% state leader -----------------------------------------------------
-handle_info({start_election}, #state{fsm_state=leader}=State) ->
-    io:format(" ~p~n",[{start_election,leader,node(),?MODULE,?LINE}]),
-    send_i_am_alive(State#state.app),
-    send_start_election(State#state.app),
-    set_election_timer(State#state.timeout_pid,?ELECTION_RESPONSE_TIMEOUT),
-    NewState=NewState=State#state{fsm_state=election},
-    {noreply, NewState};
-
-handle_info({i_am_alive,_HigherNode}, #state{fsm_state=leader}=State) ->
-    io:format(" ~p~n",[{i_am_alive,_HigherNode,leader,node(),?MODULE,?LINE}]),
-    NewState=State,
-    {noreply, NewState};
-
-handle_info({declare_victory,LeaderNode}, #state{fsm_state=leader}=State) ->
-   io:format(" ~p~n",[{declare_victory,LeaderNode,leader,node(),?MODULE,?LINE}]),
-    case LeaderNode==node() of
-	true->
-	    NewState=State#state{leader=node()};
-	false->
-	    monitor_node(State#state.leader, false),
-	    monitor_node(LeaderNode, true),
-	    NewState=State#state{leader=LeaderNode,
-				 fsm_state=candidate}
-    end,
-    {noreply, NewState};
-
-handle_info({timeout_election}, #state{fsm_state=leader}=State) ->
-    io:format(" ~p~n",[{timeout_election,leader,node(),?MODULE,?LINE}]),
-    set_election_timer(State#state.timeout_pid,infinity),
-    NewState=State,
-    {noreply, NewState};
-
 
 handle_info(Info, State) ->
     io:format("Unmatched signal ~p~n",[{Info,?MODULE,?LINE}]),
@@ -361,7 +332,7 @@ timeout_loop(ServerPid,TimeOut)->
     after
 	TimeOut->
 	    NewTimeOut=infinity,
-	    ServerPid!{timeout_election}
+	    rpc:cast(node(),?MODULE,timeout_election,[])
     end,
     timeout_loop(ServerPid,NewTimeOut).
        
@@ -371,36 +342,29 @@ timeout_loop(ServerPid,TimeOut)->
 %% @spec
 %% @end
 %%--------------------------------------------------------------------
-send_start_election(App)->
-    Nodes=sd:get_node(App),
+send_start_election(Nodes)->
     HigherNodes=nodes_with_higher_ids(Nodes),
-    io:format("HigherNodes  ~p~n",[{HigherNodes,node(),?MODULE,?LINE}]),
-    [rpc:cast(N,App,start_election,[])||N<-HigherNodes].
+  %  io:format("HigherNodes  ~p~n",[{HigherNodes,node(),?MODULE,?LINE}]),
+    [rpc:cast(N,?MODULE,start_election,[])||N<-HigherNodes].
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec
 %% @end
 %%--------------------------------------------------------------------
-send_declare_victory(App)->
-    Nodes=sd:get_node(App),
+send_declare_victory(Nodes)->
     LowerNodes=nodes_with_lower_ids(Nodes),
-    io:format("LowerNodes  ~p~n",[{LowerNodes,node(),?MODULE,?LINE}]),
-    [rpc:cast(N,App,declare_victory,[node()])||N<-LowerNodes].
+  %  io:format("LowerNodes  ~p~n",[{LowerNodes,node(),?MODULE,?LINE}]),
+    [rpc:cast(N,?MODULE,declare_victory,[node()])||N<-LowerNodes].
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec
 %% @end
 %%--------------------------------------------------------------------
-send_i_am_alive(App)->
-    Nodes=sd:get_node(App),
+send_i_am_alive(Nodes)->
     LowerNodes=nodes_with_lower_ids(Nodes),
-    io:format("LowerNodes  ~p~n",[{LowerNodes,node(),?MODULE,?LINE}]),
-    [rpc:cast(N,App,i_am_alive,[])||N<-LowerNodes].
-%%--------------------------------------------------------------------
-%% @doc
-%% @spec
-%% @end
-%%--------------------------------------------------------------------
+  %  io:format("LowerNodes  ~p~n",[{LowerNodes,node(),?MODULE,?LINE}]),
+    [rpc:cast(N,?MODULE,i_am_alive,[node()])||N<-LowerNodes].
+
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -412,4 +376,3 @@ nodes_with_higher_ids(Nodes) ->
 
 nodes_with_lower_ids(Nodes) ->
   [Node || Node <- Nodes, Node < node()].
-

@@ -57,6 +57,7 @@ eunit:
 	rm -f rebar.lock;
 #	tests 
 	mkdir tests_ebin;
+	cp tests/*.app tests_ebin;
 	erlc -I include -o tests_ebin tests/*.erl;
 #  	dependencies
 	rm -rf common;

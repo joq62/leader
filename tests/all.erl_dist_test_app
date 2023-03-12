@@ -1,0 +1,75 @@
+%%% -------------------------------------------------------------------
+%%% @author  : Joq Erlang
+%%% @doc: : 
+%%% Created :
+%%% Node end point  
+%%% Creates and deletes Pods
+%%% 
+%%% API-kube: Interface 
+%%% Pod consits beams from all services, app and app and sup erl.
+%%% The setup of envs is
+%%% -------------------------------------------------------------------
+-module(all).      
+    
+ 
+-export([start/1
+
+	]).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% @spec
+%% @end
+%%--------------------------------------------------------------------
+
+start([_ClusterSpec,_HostSpec])->
+    io:format("Start ~p~n",[{?MODULE,?FUNCTION_NAME}]),
+    
+    ok=setup(),
+    ok=test_1(),
+   
+    io:format("Stop OK !!! ~p~n",[{?MODULE,?FUNCTION_NAME}]),
+    timer:sleep(2000),
+  % init:stop(),
+    ok.
+
+
+%%--------------------------------------------------------------------
+%% @doc
+%% @spec
+%% @end
+%%--------------------------------------------------------------------
+test_1()->
+  io:format("Start ~p~n",[{?MODULE,?FUNCTION_NAME,?LINE}]),
+    AllNodes=test_nodes:get_nodes(),
+    [N1,N2,N3,N4]=AllNodes,
+    %% Init
+    io:format("Start ~p~n",[{?MODULE,?FUNCTION_NAME,?LINE}]),
+      
+    %% N1
+    ok=rpc:call(N1,application,load,[dist_test_app],5000),
+    ok=rpc:call(N1,application,start,[dist_test_app],5000),
+    pong=rpc:call(N1,dist_test_app,ping,[],5000),
+    timer:sleep(1000),
+    N1=rpc:call(N1,dist_test_app,who_is_leader,[]),
+    false=rpc:call(N1,dist_test_app,am_i_leader,[node()],5000),
+    true=rpc:call(N1,dist_test_app,am_i_leader,[N1],5000),
+    io:format("N1 dist_test_app OK! ~p~n",[{?MODULE,?LINE}]),
+    ok.
+
+
+%% Function: available_hosts()
+%% Description: Based on hosts.config file checks which hosts are avaible
+%% Returns: List({HostId,Ip,SshPort,Uid,Pwd}
+%% --------------------------------------------------------------------
+setup()->
+    io:format("Start ~p~n",[{?MODULE,?FUNCTION_NAME}]),
+    ok=test_nodes:start_nodes(),
+    [rpc:call(N,code,add_patha,["ebin"],5000)||N<-test_nodes:get_nodes()],    
+    [rpc:call(N,code,add_patha,["tests_ebin"],5000)||N<-test_nodes:get_nodes()],     
+    [rpc:call(N,code,add_patha,["common/ebin"],5000)||N<-test_nodes:get_nodes()],     
+    [rpc:call(N,application,start,[common],5000)||N<-test_nodes:get_nodes()], 
+    [rpc:call(N,code,add_patha,["sd/ebin"],5000)||N<-test_nodes:get_nodes()],     
+    [rpc:call(N,application,start,[sd],5000)||N<-test_nodes:get_nodes()], 
+    
+    ok.
